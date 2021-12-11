@@ -1,0 +1,9 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"mir-algorithm": "3.12.0",
+		"mir-core": "1.1.85",
+		"mir-cpuid": "1.2.7",
+		"mir-ion": {"path":"../mir-ion"}
+	}
+}
