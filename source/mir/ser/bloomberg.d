@@ -30,7 +30,7 @@ struct BloombergSerializer()
 
     BloombergElement* aggregateValue;
 
-    stringBuf currentPartString;
+    typeof(stringBuf()) currentPartString;
 
     /// Mutable value used to choose format specidied or user-defined serialization specializations
     int serdeTarget = SerdeTarget.bloomberg;
@@ -454,7 +454,6 @@ void serializeValue(S)(ref S serializer, const(BloombergElement)* value)
     }
 }
 
-version(mir_ion_test)
 unittest
 {
     import mir.ser.bloomberg;
