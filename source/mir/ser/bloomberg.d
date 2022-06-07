@@ -19,7 +19,6 @@ struct BloombergSerializer()
 {
     import mir.format: stringBuf, getData;
     import mir.bignum.decimal: Decimal;
-    import mir.bignum.low_level_view: WordEndian;
     import mir.bignum.integer: BigInt;
     import mir.ion.type_code;
     import mir.lob;
@@ -228,7 +227,7 @@ struct BloombergSerializer()
         }
     }
 
-    void putValue(W, WordEndian endian)(BigIntView!(W, endian) view)
+    void putValue(W)(BigIntView!W view)
     {
         auto i = cast(long) view;
         if (view != i)

@@ -298,7 +298,7 @@ unittest
     foreach (test; tests)
     {
         import mir.ser.ion;
-        import mir.ion.deser.ion;
+        import mir.deser.ion;
         auto ts = test.asTimestamp;
         assert(ts.serializeIon.deserializeIon!Timestamp == ts);
     }
