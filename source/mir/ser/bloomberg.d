@@ -3,6 +3,7 @@ Authros: Ilya Yaroshenko
 +/
 module mir.ser.bloomberg;
 
+import mir.bignum.low_level_view: BigIntView;
 import mir.ion.exception: IonException;
 public import mir.bloomberg.blpapi : BloombergElement = Element;
 static import blpapi = mir.bloomberg.blpapi;
@@ -47,9 +48,9 @@ struct BloombergSerializer()
         return currentPartString.data.ptr;
     }
 
-    private void pushState(BloombergElement* state)
+    private void pushState(size_t state) @trusted
     {
-        aggregateValue = state;
+        aggregateValue = cast(BloombergElement*)cast(void*)state;
         nextValue = null;
     }
 
@@ -61,10 +62,10 @@ struct BloombergSerializer()
         return state;
     }
 
-    BloombergElement* stringBegin()
+    size_t stringBegin()
     {
         currentPartString.reset;
-        return null;
+        return 0;
     }
 
     /++
@@ -76,7 +77,7 @@ struct BloombergSerializer()
         currentPartString.put(value);
     }
 
-    void stringEnd(BloombergElement*) @trusted
+    void stringEnd(size_t) @trusted
     {
         if (currentPartString.length == 1)
         {
@@ -113,23 +114,23 @@ struct BloombergSerializer()
         return putSymbolPtr(toScopeStringz(value));
     }
 
-    BloombergElement* structBegin(size_t length = 0)
+    size_t structBegin(size_t length = 0)
     {
-        return popState;
+        return cast(size_t) cast(const void*) popState;
     }
 
-    void structEnd(BloombergElement* state)
+    void structEnd(size_t state)
     {
         pushState(state);
     }
 
-    BloombergElement* listBegin(size_t length = 0)
+    size_t listBegin(size_t length = 0)
     {
         valueIndex = uint.max;
-        return null;
+        return 0;
     }
 
-    void listEnd(BloombergElement* state)
+    void listEnd(size_t state)
     {
         valueIndex = 0;
         nextValue = null;
@@ -139,9 +140,9 @@ struct BloombergSerializer()
 
     alias sexpEnd = listEnd;
 
-    BloombergElement* annotationsBegin()
+    size_t annotationsBegin()
     {
-        return aggregateValue;
+        return cast(size_t)cast(const void*) aggregateValue;
     }
 
     void putAnnotationPtr(scope const char* value)
@@ -157,17 +158,18 @@ struct BloombergSerializer()
         putAnnotationPtr(toScopeStringz(value));
     }
 
-    void annotationsEnd(BloombergElement* state)
+    size_t annotationsEnd(size_t state) @trusted
     {
-        aggregateValue = state;
+        aggregateValue = cast(BloombergElement*)cast(const void*) state;
+        return 0;
     }
 
-    BloombergElement* annotationWrapperBegin()
+    size_t annotationWrapperBegin()
     {
-        return null;
+        return 0;
     }
 
-    void annotationWrapperEnd(BloombergElement*)
+    void annotationWrapperEnd(size_t, size_t)
     {
     }
 
@@ -232,10 +234,11 @@ struct BloombergSerializer()
         auto i = cast(long) view;
         if (view != i)
         {
+            import mir.serde: SerdeException;
             static immutable exc = new SerdeException("BloombergSerializer: integer overflow");
             throw exc;
         }
-        putValue(num);
+        putValue(i);
     }
 
     void putValue(size_t size)(auto ref const BigInt!size num)
@@ -425,7 +428,6 @@ void serializeValue(S)(ref S serializer, const(BloombergElement)* value)
             }
             case blpapi.DataType.choice: {
                 auto wrapperState = serializer.annotationWrapperBegin;
-                auto annotationsState = serializer.annotationsBegin;
                 do
                 {
                     BloombergElement* v;
@@ -437,9 +439,9 @@ void serializeValue(S)(ref S serializer, const(BloombergElement)* value)
                     value = v;
                 }
                 while (blpapi.datatype(value) == blpapi.DataType.choice);
-                serializer.annotationsEnd(annotationsState);
+                auto annotationsEnd = serializer.annotationsEnd(wrapperState);
                 serializer.serializeValue(value);
-                serializer.annotationWrapperEnd(wrapperState);
+                serializer.annotationWrapperEnd(annotationsEnd, wrapperState);
                 continue;
             }
             case blpapi.DataType.bytearray:
@@ -460,9 +462,16 @@ unittest
     import mir.ser.ion;
     import mir.ser.json;
     import mir.ser.text;
+    import mir.ser.interfaces: SerializerWrapper;
     BloombergSerializer!() ser;
     BloombergElement* value;
     serializeValue(ser, value.init);
+    scope wserializer = new SerializerWrapper!(typeof(ser))(ser);
+
+    import mir.string_map;
+    import mir.ser: serializeValue;
+    const string[string] val;
+    serializeValue(wserializer, val);
     auto text = value.serializeText;
     auto json = value.serializeJson;
     auto ion = value.serializeIon;
