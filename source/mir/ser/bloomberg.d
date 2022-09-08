@@ -11,6 +11,10 @@ private alias validate = blpapi.validateBloombergErroCode;
 
 private static immutable bloombergClobSerializationIsntImplemented = new IonException("Bloomberg CLOB serialization isn't implemented.");
 private static immutable bloombergBlobSerializationIsntImplemented = new IonException("Bloomberg BLOB serialization isn't implemented.");
+private static immutable pushExt = new IonException("BloombergSerializer: stack overflow");
+private static immutable popExc = new IonException("BloombergSerializer: stack underflow");
+private static immutable nextTopLevelValueExc = new IonException("Can't serialize to multiple Bloomberg Elements at once.");
+private static immutable nullValueException = new IonException("Null Bloomberg Element.");
 
 /++
 Ion serialization back-end
@@ -26,16 +30,36 @@ struct BloombergSerializer()
     import mir.serde: SerdeTarget;
     import std.traits: isNumeric;
 
-    BloombergElement* nextValue;
+    private BloombergElement*[16] values;
+    private bool[16] scalarFlags;
+    private size_t depth;
 
-    BloombergElement* aggregateValue;
+    this(BloombergElement* value)
+    {
+        push(value);
+    }
+
+    private ref inout(BloombergElement*) currentValue() inout @property
+        in (depth)
+    {
+        return values[depth - 1 - currentScalarFlag];
+    }
+
+    private ref inout(bool) currentScalarFlag() inout @property
+        in (depth)
+    {
+        return scalarFlags[depth - 1];
+    }
 
     typeof(stringBuf()) currentPartString;
 
     /// Mutable value used to choose format specidied or user-defined serialization specializations
     int serdeTarget = SerdeTarget.bloomberg;
 
-    private uint valueIndex;
+    private uint index() const @property
+    {
+        return currentScalarFlag ? uint.max : 0;
+    }
 
 @safe pure:
 
@@ -47,18 +71,35 @@ struct BloombergSerializer()
         return currentPartString.data.ptr;
     }
 
-    private void pushState(BloombergElement* state)
+    private void push(BloombergElement* value)
     {
-        aggregateValue = state;
-        nextValue = null;
+        if (value is null)
+            throw nullValueException;
+        if (depth >= values.length)
+            throw pushExt;
+        depth++;
+        currentScalarFlag = false;
+        currentValue = value;
     }
 
-    private BloombergElement* popState()
+    private void push()
     {
-        auto state = aggregateValue;
-        aggregateValue = nextValue;
-        nextValue = null;
-        return state;
+        if (depth >= values.length)
+            throw pushExt;
+        
+        depth++;
+        currentScalarFlag = true;
+    }
+
+    private BloombergElement* pop()
+    {
+        if (depth == 0)
+            throw popExc;
+        auto value = currentValue;
+        if (value is null)
+            throw nullValueException;
+        depth--;
+        return value;
     }
 
     BloombergElement* stringBegin()
@@ -78,6 +119,8 @@ struct BloombergSerializer()
 
     void stringEnd(BloombergElement*) @trusted
     {
+        auto valueIndex = index;
+        auto nextValue = pop;
         if (currentPartString.length == 1)
         {
             blpapi.setValueChar(nextValue, *currentPartString.data.ptr, valueIndex).validate;
@@ -103,8 +146,9 @@ struct BloombergSerializer()
 
     void putSymbolPtr(scope const char* value)
     {
+        auto valueIndex = index;
         auto name = getName(value);
-        blpapi.setValueFromName(nextValue, name, valueIndex).validate;
+        blpapi.setValueFromName(pop, name, valueIndex).validate;
         blpapi.nameDestroy(name);
     }
 
@@ -113,43 +157,36 @@ struct BloombergSerializer()
         return putSymbolPtr(toScopeStringz(value));
     }
 
-    BloombergElement* structBegin(size_t length = 0)
+    size_t structBegin(size_t length = 0)
     {
-        return popState;
+        return 0;
     }
 
-    void structEnd(BloombergElement* state)
+    void structEnd(size_t state)
     {
-        pushState(state);
+        pop;
     }
 
-    BloombergElement* listBegin(size_t length = 0)
-    {
-        valueIndex = uint.max;
-        return null;
-    }
+    alias listBegin = structBegin;
 
-    void listEnd(BloombergElement* state)
-    {
-        valueIndex = 0;
-        nextValue = null;
-    }
+    alias listEnd = structEnd;
 
     alias sexpBegin = listBegin;
 
     alias sexpEnd = listEnd;
 
-    BloombergElement* annotationsBegin()
+    size_t annotationsBegin()
     {
-        return aggregateValue;
+        return 0;
     }
 
-    void putAnnotationPtr(scope const char* value)
+    void putAnnotationPtr(scope const char* annotation)
     {
-        aggregateValue = nextValue;
-        auto name = getName(value);
-        blpapi.setChoice(nextValue, nextValue, null, name, 0).validate;
+        auto name = getName(annotation);
+        BloombergElement* nextValue;
+        blpapi.setChoice(currentValue, nextValue, null, name, 0).validate;
         blpapi.nameDestroy(name);
+        push(nextValue);
     }
 
     void putAnnotation(scope const char[] value) @trusted
@@ -157,33 +194,32 @@ struct BloombergSerializer()
         putAnnotationPtr(toScopeStringz(value));
     }
 
-    void annotationsEnd(BloombergElement* state)
+    void annotationsEnd(size_t state)
     {
-        aggregateValue = state;
     }
 
-    BloombergElement* annotationWrapperBegin()
+    size_t annotationWrapperBegin()
     {
-        return null;
+        return 0;
     }
 
-    void annotationWrapperEnd(BloombergElement*)
+    void annotationWrapperEnd(size_t)
     {
+        pop;
     }
 
     void nextTopLevelValue()
     {
-        static immutable exc = new IonException("Can't serialize to multiple Bloomberg Elements at once.");
-        throw exc;
+        throw nextTopLevelValueExc;
     }
 
     void putKeyPtr(scope const char* key)
     {
-        nextValue = null;
         auto name = getName(key);
-        blpapi.getElement(aggregateValue, nextValue, null, name).validate;
+        BloombergElement* nextValue;
+        blpapi.getElement(currentValue, nextValue, null, name).validate;
         blpapi.nameDestroy(name);
-        assert(nextValue !is null);
+        push(nextValue);
     }
 
     void putKey(scope const char[] key)
@@ -196,7 +232,8 @@ struct BloombergSerializer()
     {
         import mir.internal.utility: isFloatingPoint;
 
-        assert(nextValue);
+        auto valueIndex = index;
+        auto nextValue = pop;
         static if (isFloatingPoint!Num)
         {
             if (float(value) is value)
@@ -250,7 +287,6 @@ struct BloombergSerializer()
 
     void putValue(typeof(null))
     {
-        assert(nextValue);
     }
 
     /// ditto 
@@ -261,8 +297,8 @@ struct BloombergSerializer()
 
     void putValue(bool b)
     {
-        assert(nextValue);
-        blpapi.setValueBool(nextValue, b, valueIndex).validate;
+        auto valueIndex = index;
+        blpapi.setValueBool(pop, b, valueIndex).validate;
     }
 
     void putValue(scope const char[] value)
@@ -284,12 +320,24 @@ struct BloombergSerializer()
 
     void putValue(Timestamp value)
     {
+        auto valueIndex = index;
         blpapi.HighPrecisionDatetime dt = value;
-        blpapi.setValueHighPrecisionDatetime(nextValue, dt, valueIndex).validate;
+        blpapi.setValueHighPrecisionDatetime(pop, dt, valueIndex).validate;
     }
 
     void elemBegin()
     {
+        BloombergElement* nextValue;
+        // 'complex' bloomberg value
+        if (blpapi.appendElement(currentValue, nextValue) == 0)
+        {
+            push(nextValue);
+            return;
+        }
+        else
+        {
+            push;
+        }
     }
 
     alias sexpElemBegin = elemBegin;
